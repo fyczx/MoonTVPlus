@@ -129,6 +129,7 @@ jobs:
               const error = new Error(detail.message || `Vercel API ${response.status}`);
               error.status = response.status;
               error.detail = detail;
+              error.path = new URL(url).pathname;
               throw error;
             }
             return body;
@@ -138,27 +139,17 @@ jobs:
             const detail = error.detail || {};
             const extra = [
               detail.code ? `code=${detail.code}` : '',
+              detail.invalidToken ? 'invalidToken=true' : '',
+              detail.missingToken ? 'missingToken=true' : '',
               detail.scope ? `scope=${detail.scope}` : '',
               detail.teamId ? `teamId=${detail.teamId}` : '',
               detail.saml ? 'saml=true' : '',
-              detail.invalidToken ? 'invalidToken=true' : '',
             ].filter(Boolean);
-            return `${error.status || ''} ${error.message || 'request failed'}${extra.length ? ` (${extra.join(' ')})` : ''}`.trim();
+            return `${error.status || ''} ${error.path || ''} ${error.message || 'request failed'}${extra.length ? ` (${extra.join(' ')})` : ''}`.trim();
           }
 
           async function getJson(url) {
-            try {
-              return await requestJson(url);
-            } catch (error) {
-              const scope = error.detail?.scope;
-              const teamId = error.detail?.teamId;
-              if (error.status !== 403 || (!scope && !teamId)) throw error;
-              const next = new URL(url);
-              if (scope && !next.searchParams.has('slug')) next.searchParams.set('slug', scope);
-              if (teamId && !next.searchParams.has('teamId')) next.searchParams.set('teamId', teamId);
-              if (next.toString() === url) throw error;
-              return requestJson(next);
-            }
+            return requestJson(url);
           }
 
           function readProjects(data) {
@@ -174,7 +165,7 @@ jobs:
               const params = new URLSearchParams({ limit: '100' });
               if (teamId) params.set('teamId', teamId);
               if (until) params.set('until', until);
-              const data = await getJson(`https://api.vercel.com/v9/projects?${params}`);
+              const data = await getJson(`https://api.vercel.com/v10/projects?${params}`);
               const batch = readProjects(data);
               projects.push(...batch);
               const next = data.pagination?.next;
@@ -224,16 +215,17 @@ jobs:
 
           (async () => {
             const notes = [];
-            let userId = '';
-            try {
-              const user = await getJson('https://api.vercel.com/v2/user');
-              userId = user.user?.uid || user.user?.id || user.uid || user.id || '';
-              notes.push(userId ? 'user: ok' : 'user: no id');
-            } catch (error) {
-              notes.push(`user: ${describe(error)}`);
+            const userId = '';
+            const visible = [];
+
+            function resolved() {
+              const projects = uniqueByProject(visible);
+              return (
+                projects.filter((item) => item.linked).length === 1 ||
+                projects.filter((item) => item.nameMatch).length === 1
+              );
             }
 
-            const visible = [];
             async function collect(teamId, label) {
               try {
                 const projects = await listProjects(teamId);
@@ -244,26 +236,29 @@ jobs:
                   else notes.push(`${label}: skipped a project with no account id`);
                 }
               } catch (error) {
-                if (error.status === 401) throw error;
+                if (error.detail?.invalidToken || error.detail?.missingToken) throw error;
                 notes.push(`${label}: ${describe(error)}`);
               }
             }
 
-            await collect('', 'token scope');
+            await collect('', 'GET /v10/projects');
 
             const teamList = [];
-            try {
-              const teams = await getJson('https://api.vercel.com/v2/teams');
-              teamList.push(...(teams.teams || []));
-              notes.push(`teams: ${teamList.length}`);
-              for (const team of teamList) {
-                if (!team.id) continue;
-                await collect(team.id, team.slug || team.id);
+            if (!resolved()) {
+              try {
+                const teams = await getJson('https://api.vercel.com/v2/teams');
+                teamList.push(...(teams.teams || []));
+                notes.push(`teams: ${teamList.length}`);
+                for (const team of teamList) {
+                  if (!team.id || resolved()) continue;
+                  await collect(team.id, team.slug || team.id);
+                }
+              } catch (error) {
+                if (error.detail?.invalidToken || error.detail?.missingToken) throw error;
+                notes.push(`teams: ${describe(error)}`);
               }
-            } catch (error) {
-              if (error.status === 401) throw error;
-              notes.push(`teams: ${describe(error)}`);
             }
+
 
             async function lookupNamedProject(teamId, label) {
               const params = new URLSearchParams();
