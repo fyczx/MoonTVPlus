@@ -531,6 +531,49 @@ jobs:
       - name: Pull Vercel project settings
         run: ./node_modules/.bin/vercel pull --yes --environment="$VERCEL_TARGET" --token "$VERCEL_TOKEN"
 
+      - name: Use Node.js 24
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+
+          const path = '.vercel/project.json';
+          const project = JSON.parse(fs.readFileSync(path, 'utf8'));
+          project.settings = project.settings || {};
+          const current = project.settings.nodeVersion || project.nodeVersion || '';
+          project.settings.nodeVersion = '24.x';
+          if (project.nodeVersion) project.nodeVersion = '24.x';
+          fs.writeFileSync(path, JSON.stringify(project, null, 2) + '\n');
+          console.log(`Local Node.js version ${current || '(unset)'} -> 24.x`);
+
+          const token = String(process.env.VERCEL_TOKEN || '').replace(/\s+/g, '');
+          const projectId = process.env.VERCEL_PROJECT_ID || project.projectId;
+          const orgId = process.env.VERCEL_ORG_ID || project.orgId || '';
+          if (!token || !projectId) process.exit(0);
+
+          const url = new URL(`https://api.vercel.com/v9/projects/${projectId}`);
+          if (String(orgId).startsWith('team_')) url.searchParams.set('teamId', orgId);
+
+          fetch(url, {
+            method: 'PATCH',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ nodeVersion: '24.x' }),
+          }).then(async (response) => {
+            const text = await response.text();
+            if (!response.ok) {
+              console.log(`Remote Node.js setting was not changed (${response.status}). Local build will still use 24.x.`);
+              console.log(text.slice(0, 300));
+              return;
+            }
+            console.log('Remote project Node.js version set to 24.x');
+          }).catch((error) => {
+            console.log(`Remote Node.js setting was not changed (${error.message}). Local build will still use 24.x.`);
+          });
+          NODE
+
+
       - name: Sync Vercel environment variables
         if: ${{ inputs.sync_environment }}
         run: |
