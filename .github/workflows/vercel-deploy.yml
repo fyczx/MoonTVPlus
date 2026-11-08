@@ -131,20 +131,9 @@ jobs:
             let from = '';
             for (let page = 0; page < 10; page += 1) {
               const params = new URLSearchParams({ limit: '100' });
-              params.set('repoUrl', `https://github.com/${repository}`);
               if (teamId) params.set('teamId', teamId);
               if (from) params.set('from', from);
-              let data;
-              try {
-                data = await getJson(`https://api.vercel.com/v10/projects?${params}`);
-              } catch (error) {
-                if (error.status === 400) {
-                  params.delete('repoUrl');
-                  data = await getJson(`https://api.vercel.com/v10/projects?${params}`);
-                } else {
-                  throw error;
-                }
-              }
+              const data = await getJson(`https://api.vercel.com/v10/projects?${params}`);
               const batch = Array.isArray(data) ? data : data.projects || [];
               projects.push(...batch);
               const next = data.pagination?.next;
@@ -154,12 +143,53 @@ jobs:
             return projects;
           }
 
-          function matches(project) {
+          function sameText(left, right) {
+            return String(left || '').toLowerCase() === String(right || '').toLowerCase();
+          }
+
+          function githubLinked(project) {
             const link = project.link;
-            return Boolean(link && link.type === 'github' && link.org === owner && link.repo === repo);
+            return Boolean(
+              link &&
+                link.type === 'github' &&
+                sameText(link.org, owner) &&
+                sameText(link.repo, repo),
+            );
+          }
+
+          function toCandidate(project, scope, userId) {
+            const orgId = project.accountId || scope.teamId || userId;
+            if (!orgId || !project.id) return null;
+            return {
+              orgId,
+              projectId: project.id,
+              name: project.name || project.id,
+              linked: githubLinked(project),
+              nameMatch: sameText(project.name, repo),
+            };
+          }
+
+          function uniqueByProject(items) {
+            const unique = [];
+            const seen = new Set();
+            for (const item of items) {
+              const key = `${item.orgId}:${item.projectId}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              unique.push(item);
+            }
+            return unique;
           }
 
           (async () => {
+            let userId = '';
+            try {
+              const user = await getJson('https://api.vercel.com/v2/user');
+              userId = user.user?.id || user.id || '';
+            } catch (error) {
+              if (error.status !== 403) throw error;
+            }
+
             const scopes = [{ teamId: '', label: 'personal' }];
             try {
               const teams = await getJson('https://api.vercel.com/v2/teams');
@@ -170,7 +200,7 @@ jobs:
               if (error.status !== 403) throw error;
             }
 
-            const found = [];
+            const visible = [];
             for (const scope of scopes) {
               let projects = [];
               try {
@@ -181,38 +211,37 @@ jobs:
                 throw error;
               }
               for (const project of projects) {
-                if (!matches(project)) continue;
-                found.push({
-                  orgId: project.accountId || scope.teamId,
-                  projectId: project.id,
-                  name: project.name,
-                });
+                const candidate = toCandidate(project, scope, userId);
+                if (candidate) visible.push(candidate);
               }
             }
 
-            const unique = [];
-            const seen = new Set();
-            for (const item of found) {
-              const key = `${item.orgId}:${item.projectId}`;
-              if (seen.has(key)) continue;
-              seen.add(key);
-              unique.push(item);
-            }
+            const projects = uniqueByProject(visible);
+            const linked = projects.filter((item) => item.linked);
+            const named = projects.filter((item) => item.nameMatch);
+            const chosen = linked.length === 1 ? linked : named.length === 1 ? named : projects.length === 1 ? projects : [];
 
-            if (unique.length === 1) {
-              publish(unique[0].orgId, unique[0].projectId, `github:${repository}`);
+            if (chosen.length === 1) {
+              const source = chosen[0].linked
+                ? `github:${repository}`
+                : chosen[0].nameMatch
+                  ? `name:${chosen[0].name}`
+                  : 'only visible project';
+              publish(chosen[0].orgId, chosen[0].projectId, source);
               return;
             }
-            if (unique.length === 0) {
-              console.error(`No Vercel project is linked to ${repository}.`);
-              console.error('Connect this GitHub repository in the Vercel project, or set VERCEL_ORG_ID and VERCEL_PROJECT_ID.');
+
+            if (projects.length === 0) {
+              console.error('This token cannot see any Vercel project.');
+              console.error('Create a Vercel project, or set VERCEL_ORG_ID and VERCEL_PROJECT_ID.');
               process.exit(1);
             }
-            console.error(`Multiple Vercel projects are linked to ${repository}:`);
-            for (const item of unique) {
+            console.error(`No single Vercel project matched ${repository}.`);
+            console.error('Visible projects:');
+            for (const item of projects) {
               console.error(`- ${item.name} org=${item.orgId} project=${item.projectId}`);
             }
-            console.error('Set VERCEL_ORG_ID and VERCEL_PROJECT_ID to choose one.');
+            console.error('Rename the project to the repository name, or set VERCEL_ORG_ID and VERCEL_PROJECT_ID.');
             process.exit(1);
           })().catch((error) => {
             console.error(error.message || error);
