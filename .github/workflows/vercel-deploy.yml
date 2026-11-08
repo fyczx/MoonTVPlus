@@ -109,7 +109,10 @@ jobs:
 
           async function getJson(url) {
             const response = await fetch(url, {
-              headers: { Authorization: `Bearer ${token}` },
+              headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: 'application/json',
+              },
             });
             const text = await response.text();
             let body = {};
@@ -126,19 +129,25 @@ jobs:
             return body;
           }
 
+          function readProjects(data) {
+            if (Array.isArray(data)) return data;
+            if (Array.isArray(data.projects)) return data.projects;
+            return [];
+          }
+
           async function listProjects(teamId) {
             const projects = [];
-            let from = '';
+            let until = '';
             for (let page = 0; page < 10; page += 1) {
               const params = new URLSearchParams({ limit: '100' });
               if (teamId) params.set('teamId', teamId);
-              if (from) params.set('from', from);
-              const data = await getJson(`https://api.vercel.com/v10/projects?${params}`);
-              const batch = Array.isArray(data) ? data : data.projects || [];
+              if (until) params.set('until', until);
+              const data = await getJson(`https://api.vercel.com/v9/projects?${params}`);
+              const batch = readProjects(data);
               projects.push(...batch);
               const next = data.pagination?.next;
               if (next === undefined || next === null || batch.length === 0) break;
-              from = String(next);
+              until = String(next);
             }
             return projects;
           }
@@ -182,44 +191,52 @@ jobs:
           }
 
           (async () => {
+            const notes = [];
             let userId = '';
             try {
               const user = await getJson('https://api.vercel.com/v2/user');
-              userId = user.user?.id || user.id || '';
+              userId = user.user?.uid || user.user?.id || user.uid || user.id || '';
+              notes.push(userId ? 'user: ok' : 'user: no id');
             } catch (error) {
-              if (error.status !== 403) throw error;
-            }
-
-            const scopes = [{ teamId: '', label: 'personal' }];
-            try {
-              const teams = await getJson('https://api.vercel.com/v2/teams');
-              for (const team of teams.teams || []) {
-                if (team.id) scopes.push({ teamId: team.id, label: team.slug || team.id });
-              }
-            } catch (error) {
-              if (error.status !== 403) throw error;
+              notes.push(`user: ${error.status || ''} ${error.message}`.trim());
             }
 
             const visible = [];
-            for (const scope of scopes) {
-              let projects = [];
+            async function collect(teamId, label) {
               try {
-                projects = await listProjects(scope.teamId);
+                const projects = await listProjects(teamId);
+                notes.push(`${label}: ${projects.length} project(s)`);
+                for (const project of projects) {
+                  const candidate = toCandidate(project, { teamId }, userId);
+                  if (candidate) visible.push(candidate);
+                  else notes.push(`${label}: skipped a project with no account id`);
+                }
               } catch (error) {
                 if (error.status === 401) throw error;
-                if (error.status === 403 || error.status === 404) continue;
-                throw error;
+                notes.push(`${label}: ${error.status || ''} ${error.message}`.trim());
               }
-              for (const project of projects) {
-                const candidate = toCandidate(project, scope, userId);
-                if (candidate) visible.push(candidate);
+            }
+
+            await collect('', 'token scope');
+
+            try {
+              const teams = await getJson('https://api.vercel.com/v2/teams');
+              const teamList = teams.teams || [];
+              notes.push(`teams: ${teamList.length}`);
+              for (const team of teamList) {
+                if (!team.id) continue;
+                await collect(team.id, team.slug || team.id);
               }
+            } catch (error) {
+              if (error.status === 401) throw error;
+              notes.push(`teams: ${error.status || ''} ${error.message}`.trim());
             }
 
             const projects = uniqueByProject(visible);
             const linked = projects.filter((item) => item.linked);
             const named = projects.filter((item) => item.nameMatch);
-            const chosen = linked.length === 1 ? linked : named.length === 1 ? named : projects.length === 1 ? projects : [];
+            const chosen =
+              linked.length === 1 ? linked : named.length === 1 ? named : projects.length === 1 ? projects : [];
 
             if (chosen.length === 1) {
               const source = chosen[0].linked
@@ -231,9 +248,10 @@ jobs:
               return;
             }
 
+            for (const line of notes) console.error(line);
             if (projects.length === 0) {
               console.error('This token cannot see any Vercel project.');
-              console.error('Create a Vercel project, or set VERCEL_ORG_ID and VERCEL_PROJECT_ID.');
+              console.error('Use a Full Account token, or a token scoped to the team or project that owns the deployment.');
               process.exit(1);
             }
             console.error(`No single Vercel project matched ${repository}.`);
@@ -241,7 +259,7 @@ jobs:
             for (const item of projects) {
               console.error(`- ${item.name} org=${item.orgId} project=${item.projectId}`);
             }
-            console.error('Rename the project to the repository name, or set VERCEL_ORG_ID and VERCEL_PROJECT_ID.');
+            console.error('Set VERCEL_ORG_ID and VERCEL_PROJECT_ID to choose one.');
             process.exit(1);
           })().catch((error) => {
             console.error(error.message || error);
