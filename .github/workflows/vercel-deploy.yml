@@ -206,7 +206,7 @@ jobs:
               projectId: project.id,
               name: project.name || project.id,
               linked: githubLinked(project),
-              nameMatch: sameText(project.name, repo),
+              nameMatch: sameText(project.name, 'moontvplus'),
             };
           }
 
@@ -251,9 +251,10 @@ jobs:
 
             await collect('', 'token scope');
 
+            const teamList = [];
             try {
               const teams = await getJson('https://api.vercel.com/v2/teams');
-              const teamList = teams.teams || [];
+              teamList.push(...(teams.teams || []));
               notes.push(`teams: ${teamList.length}`);
               for (const team of teamList) {
                 if (!team.id) continue;
@@ -264,38 +265,46 @@ jobs:
               notes.push(`teams: ${describe(error)}`);
             }
 
-            if (visible.length === 0) {
-              const names = [...new Set([repo.toLowerCase(), repo])].filter(Boolean);
-              for (const name of names) {
-                try {
-                  const project = await getJson(
-                    `https://api.vercel.com/v9/projects/${encodeURIComponent(name)}`,
-                  );
-                  const candidate = toCandidate(project, { teamId: '' }, userId);
-                  if (candidate) {
-                    visible.push(candidate);
-                    notes.push(`project ${name}: found`);
-                    break;
-                  }
-                  notes.push(`project ${name}: missing account id`);
-                } catch (error) {
-                  notes.push(`project ${name}: ${describe(error)}`);
+            async function lookupNamedProject(teamId, label) {
+              const params = new URLSearchParams();
+              if (teamId) params.set('teamId', teamId);
+              const query = params.toString();
+              const url = `https://api.vercel.com/v9/projects/${encodeURIComponent('moontvplus')}${query ? `?${query}` : ''}`;
+              try {
+                const project = await getJson(url);
+                const candidate = toCandidate(project, { teamId }, userId);
+                if (!candidate) {
+                  notes.push(`${label} moontvplus: missing account id`);
+                  return;
                 }
+                visible.push(candidate);
+                notes.push(`${label} moontvplus: found`);
+              } catch (error) {
+                if (error.status === 401) throw error;
+                if (error.status === 404) return;
+                notes.push(`${label} moontvplus: ${describe(error)}`);
               }
             }
+
+            await lookupNamedProject('', 'token scope');
+            for (const team of teamList) {
+              if (!team.id) continue;
+              await lookupNamedProject(team.id, team.slug || team.id);
+            }
+
 
             const projects = uniqueByProject(visible);
             const linked = projects.filter((item) => item.linked);
             const named = projects.filter((item) => item.nameMatch);
             const chosen =
-              linked.length === 1 ? linked : named.length === 1 ? named : projects.length === 1 ? projects : [];
+              linked.length === 1 ? linked : named.length === 1 ? named : [];
 
             if (chosen.length === 1) {
               const source = chosen[0].linked
                 ? `github:${repository}`
                 : chosen[0].nameMatch
                   ? `name:${chosen[0].name}`
-                  : 'only visible project';
+                  : 'name:moontvplus';
               publish(chosen[0].orgId, chosen[0].projectId, source);
               return;
             }
@@ -306,7 +315,7 @@ jobs:
               console.error('Use a Full Account token, or a token scoped to the team or project that owns the deployment.');
               process.exit(1);
             }
-            console.error(`No single Vercel project matched ${repository}.`);
+            console.error('No Vercel project is linked to this repository, and no project named moontvplus was found.');
             console.error('Visible projects:');
             for (const item of projects) {
               console.error(`- ${item.name} org=${item.orgId} project=${item.projectId}`);
