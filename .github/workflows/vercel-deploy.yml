@@ -529,7 +529,7 @@ jobs:
           fi
 
       - name: Pull Vercel project settings
-        run: ./node_modules/.bin/vercel pull --yes --environment="$VERCEL_TARGET"
+        run: ./node_modules/.bin/vercel pull --yes --environment="$VERCEL_TARGET" --token "$VERCEL_TOKEN"
 
       - name: Sync Vercel environment variables
         if: ${{ inputs.sync_environment }}
@@ -551,9 +551,9 @@ jobs:
             tmp=$(mktemp)
             printf '%s' "$value" > "$tmp"
             echo "Syncing $key"
-            if ! ./node_modules/.bin/vercel env add "$key" "$VERCEL_TARGET" --force --yes "${sensitive_flag[@]}" < "$tmp"; then
-              ./node_modules/.bin/vercel env rm "$key" "$VERCEL_TARGET" --yes || true
-              ./node_modules/.bin/vercel env add "$key" "$VERCEL_TARGET" --yes "${sensitive_flag[@]}" < "$tmp"
+            if ! ./node_modules/.bin/vercel env add "$key" "$VERCEL_TARGET" --force --yes --token "$VERCEL_TOKEN" "${sensitive_flag[@]}" < "$tmp"; then
+              ./node_modules/.bin/vercel env rm "$key" "$VERCEL_TARGET" --yes --token "$VERCEL_TOKEN" || true
+              ./node_modules/.bin/vercel env add "$key" "$VERCEL_TARGET" --yes --token "$VERCEL_TOKEN" "${sensitive_flag[@]}" < "$tmp"
             fi
             rm -f "$tmp"
           }
@@ -627,7 +627,7 @@ jobs:
 
       - name: Build for Vercel
         run: |
-          args=(build)
+          args=(build --token "$VERCEL_TOKEN")
           if [ "$VERCEL_TARGET" = "production" ]; then
             args+=(--prod)
           fi
@@ -636,7 +636,7 @@ jobs:
       - name: Deploy to Vercel
         id: deploy
         run: |
-          args=(deploy --prebuilt --archive=tgz --yes)
+          args=(deploy --prebuilt --archive=tgz --yes --token "$VERCEL_TOKEN")
           if [ "$VERCEL_TARGET" = "production" ]; then
             args+=(--prod)
           fi
