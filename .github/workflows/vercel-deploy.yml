@@ -76,7 +76,10 @@ jobs:
           node <<'NODE'
           const fs = require('fs');
 
-          const token = process.env.VERCEL_TOKEN;
+          const token = String(process.env.VERCEL_TOKEN || '')
+            .trim()
+            .replace(/^Bearer\s+/i, '')
+            .replace(/^['"]|['"]$/g, '');
           const givenOrg = process.env.VERCEL_ORG_ID || '';
           const givenProject = process.env.VERCEL_PROJECT_ID || '';
           const repository = process.env.GITHUB_REPOSITORY || '';
@@ -107,7 +110,7 @@ jobs:
             process.exit(1);
           }
 
-          async function getJson(url) {
+          async function requestJson(url) {
             const response = await fetch(url, {
               headers: {
                 Authorization: `Bearer ${token}`,
@@ -122,11 +125,40 @@ jobs:
               body = {};
             }
             if (!response.ok) {
-              const error = new Error(body.error?.message || `Vercel API ${response.status}`);
+              const detail = body.error || {};
+              const error = new Error(detail.message || `Vercel API ${response.status}`);
               error.status = response.status;
+              error.detail = detail;
               throw error;
             }
             return body;
+          }
+
+          function describe(error) {
+            const detail = error.detail || {};
+            const extra = [
+              detail.code ? `code=${detail.code}` : '',
+              detail.scope ? `scope=${detail.scope}` : '',
+              detail.teamId ? `teamId=${detail.teamId}` : '',
+              detail.saml ? 'saml=true' : '',
+              detail.invalidToken ? 'invalidToken=true' : '',
+            ].filter(Boolean);
+            return `${error.status || ''} ${error.message || 'request failed'}${extra.length ? ` (${extra.join(' ')})` : ''}`.trim();
+          }
+
+          async function getJson(url) {
+            try {
+              return await requestJson(url);
+            } catch (error) {
+              const scope = error.detail?.scope;
+              const teamId = error.detail?.teamId;
+              if (error.status !== 403 || (!scope && !teamId)) throw error;
+              const next = new URL(url);
+              if (scope && !next.searchParams.has('slug')) next.searchParams.set('slug', scope);
+              if (teamId && !next.searchParams.has('teamId')) next.searchParams.set('teamId', teamId);
+              if (next.toString() === url) throw error;
+              return requestJson(next);
+            }
           }
 
           function readProjects(data) {
@@ -198,7 +230,7 @@ jobs:
               userId = user.user?.uid || user.user?.id || user.uid || user.id || '';
               notes.push(userId ? 'user: ok' : 'user: no id');
             } catch (error) {
-              notes.push(`user: ${error.status || ''} ${error.message}`.trim());
+              notes.push(`user: ${describe(error)}`);
             }
 
             const visible = [];
@@ -213,7 +245,7 @@ jobs:
                 }
               } catch (error) {
                 if (error.status === 401) throw error;
-                notes.push(`${label}: ${error.status || ''} ${error.message}`.trim());
+                notes.push(`${label}: ${describe(error)}`);
               }
             }
 
@@ -229,7 +261,27 @@ jobs:
               }
             } catch (error) {
               if (error.status === 401) throw error;
-              notes.push(`teams: ${error.status || ''} ${error.message}`.trim());
+              notes.push(`teams: ${describe(error)}`);
+            }
+
+            if (visible.length === 0) {
+              const names = [...new Set([repo.toLowerCase(), repo])].filter(Boolean);
+              for (const name of names) {
+                try {
+                  const project = await getJson(
+                    `https://api.vercel.com/v9/projects/${encodeURIComponent(name)}`,
+                  );
+                  const candidate = toCandidate(project, { teamId: '' }, userId);
+                  if (candidate) {
+                    visible.push(candidate);
+                    notes.push(`project ${name}: found`);
+                    break;
+                  }
+                  notes.push(`project ${name}: missing account id`);
+                } catch (error) {
+                  notes.push(`project ${name}: ${describe(error)}`);
+                }
+              }
             }
 
             const projects = uniqueByProject(visible);
