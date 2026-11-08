@@ -1,0 +1,386 @@
+name: Deploy to Vercel
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: '部署环境：production = 生产，preview = 预览'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - preview
+      sync_environment:
+        description: '部署前把已配置的 GitHub Secrets 同步到 Vercel 环境变量'
+        required: false
+        default: true
+        type: boolean
+      init_turso:
+        description: '构建前执行 pnpm init:turso（使用 Secrets 中的 TURSO_URL、TURSO_TOKEN，脚本可重复执行）'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy to Vercel
+    env:
+      CI: true
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_TARGET: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check Vercel credentials
+        run: |
+          case "$VERCEL_TARGET" in
+            production|preview) ;;
+            *)
+              echo "Unsupported environment: $VERCEL_TARGET" >&2
+              exit 1
+              ;;
+          esac
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID are required" >&2
+            exit 1
+          fi
+          ./node_modules/.bin/vercel --version
+
+      - name: Export build environment variables
+        env:
+          NEXT_PUBLIC_STORAGE_TYPE: ${{ secrets.NEXT_PUBLIC_STORAGE_TYPE }}
+          NEXT_PUBLIC_SITE_NAME: ${{ secrets.NEXT_PUBLIC_SITE_NAME }}
+          NEXT_PUBLIC_SEARCH_MAX_PAGE: ${{ secrets.NEXT_PUBLIC_SEARCH_MAX_PAGE }}
+          NEXT_PUBLIC_DOUBAN_PROXY_TYPE: ${{ secrets.NEXT_PUBLIC_DOUBAN_PROXY_TYPE }}
+          NEXT_PUBLIC_DOUBAN_PROXY: ${{ secrets.NEXT_PUBLIC_DOUBAN_PROXY }}
+          NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE: ${{ secrets.NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE }}
+          NEXT_PUBLIC_DOUBAN_IMAGE_PROXY: ${{ secrets.NEXT_PUBLIC_DOUBAN_IMAGE_PROXY }}
+          NEXT_PUBLIC_DISABLE_YELLOW_FILTER: ${{ secrets.NEXT_PUBLIC_DISABLE_YELLOW_FILTER }}
+          NEXT_PUBLIC_FLUID_SEARCH: ${{ secrets.NEXT_PUBLIC_FLUID_SEARCH }}
+          NEXT_PUBLIC_PROXY_M3U8_TOKEN: ${{ secrets.NEXT_PUBLIC_PROXY_M3U8_TOKEN }}
+          NEXT_PUBLIC_DANMAKU_CACHE_EXPIRE_MINUTES: ${{ secrets.NEXT_PUBLIC_DANMAKU_CACHE_EXPIRE_MINUTES }}
+          NEXT_PUBLIC_VOICE_CHAT_STRATEGY: ${{ secrets.NEXT_PUBLIC_VOICE_CHAT_STRATEGY }}
+          NEXT_PUBLIC_ENABLE_OFFLINE_DOWNLOAD: ${{ secrets.NEXT_PUBLIC_ENABLE_OFFLINE_DOWNLOAD }}
+          NEXT_PUBLIC_ENABLE_SOURCE_SEARCH: ${{ secrets.NEXT_PUBLIC_ENABLE_SOURCE_SEARCH }}
+          NEXT_PUBLIC_IMAGE_PROXY: ${{ secrets.NEXT_PUBLIC_IMAGE_PROXY }}
+          NEXT_PUBLIC_IMAGE_PROXY_PREFIX: ${{ secrets.NEXT_PUBLIC_IMAGE_PROXY_PREFIX }}
+          NEXT_PUBLIC_STORAGE_PREFIX: ${{ secrets.NEXT_PUBLIC_STORAGE_PREFIX }}
+          NEXT_PUBLIC_ENABLE_STREAM_PROXY: ${{ secrets.NEXT_PUBLIC_ENABLE_STREAM_PROXY }}
+          NEXT_PUBLIC_STREAM_PROXY_URL: ${{ secrets.NEXT_PUBLIC_STREAM_PROXY_URL }}
+          NEXT_PUBLIC_ENABLE_TURNSTILE: ${{ secrets.NEXT_PUBLIC_ENABLE_TURNSTILE }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+          NEXT_PUBLIC_THEME: ${{ secrets.NEXT_PUBLIC_THEME }}
+          NEXT_PUBLIC_THEME_COLOR: ${{ secrets.NEXT_PUBLIC_THEME_COLOR }}
+          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+          NEXT_PUBLIC_BASE_PATH: ${{ secrets.NEXT_PUBLIC_BASE_PATH }}
+          USERNAME: ${{ secrets.USERNAME }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          UPSTASH_URL: ${{ secrets.UPSTASH_URL }}
+          UPSTASH_TOKEN: ${{ secrets.UPSTASH_TOKEN }}
+          TURSO_URL: ${{ secrets.TURSO_URL }}
+          TURSO_TOKEN: ${{ secrets.TURSO_TOKEN }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TMDB_IMAGE_DOMAIN: ${{ secrets.TMDB_IMAGE_DOMAIN }}
+          TMDB_PROXY: ${{ secrets.TMDB_PROXY }}
+          TMDB_REVERSE_PROXY: ${{ secrets.TMDB_REVERSE_PROXY }}
+          DANMAKU_API_BASE: ${{ secrets.DANMAKU_API_BASE }}
+          DANMAKU_API_TOKEN: ${{ secrets.DANMAKU_API_TOKEN }}
+          ANNOUNCEMENT: ${{ secrets.ANNOUNCEMENT }}
+          CRON_PASSWORD: ${{ secrets.CRON_PASSWORD }}
+          CRON_WAIT_FOR_COMPLETION: ${{ secrets.CRON_WAIT_FOR_COMPLETION }}
+          SITE_BASE: ${{ secrets.SITE_BASE }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          KVROCKS_URL: ${{ secrets.KVROCKS_URL }}
+          INIT_CONFIG: ${{ secrets.INIT_CONFIG }}
+          CONFIG_SUBSCRIPTION_URL: ${{ secrets.CONFIG_SUBSCRIPTION_URL }}
+          ENABLE_REGISTER: ${{ secrets.ENABLE_REGISTER }}
+          ENABLE_TVBOX_SUBSCRIBE: ${{ secrets.ENABLE_TVBOX_SUBSCRIBE }}
+          TVBOX_SUBSCRIBE_PATH: ${{ secrets.TVBOX_SUBSCRIBE_PATH }}
+          TVBOX_SUBSCRIBE_TOKEN: ${{ secrets.TVBOX_SUBSCRIBE_TOKEN }}
+          WATCH_ROOM_ENABLED: ${{ secrets.WATCH_ROOM_ENABLED }}
+          WATCH_ROOM_WS_URL: ${{ secrets.WATCH_ROOM_WS_URL }}
+          WATCH_ROOM_SERVER_URL: ${{ secrets.WATCH_ROOM_SERVER_URL }}
+          WATCH_ROOM_EXTERNAL_SERVER_AUTH: ${{ secrets.WATCH_ROOM_EXTERNAL_SERVER_AUTH }}
+          WATCH_ROOM_EXTERNAL_SERVER_URL: ${{ secrets.WATCH_ROOM_EXTERNAL_SERVER_URL }}
+          WATCH_ROOM_SERVER_TYPE: ${{ secrets.WATCH_ROOM_SERVER_TYPE }}
+          WEBSOCKET_SECRET: ${{ secrets.WEBSOCKET_SECRET }}
+          WEB_PUSH_EMAIL: ${{ secrets.WEB_PUSH_EMAIL }}
+          WEB_PUSH_PRIVATE_KEY: ${{ secrets.WEB_PUSH_PRIVATE_KEY }}
+          WEB_PUSH_PUBLIC_KEY: ${{ secrets.WEB_PUSH_PUBLIC_KEY }}
+          WEB_PUSH_BASEURL: ${{ secrets.WEB_PUSH_BASEURL }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          POSTGRES_PRISMA_URL: ${{ secrets.POSTGRES_PRISMA_URL }}
+          POSTGRES_URL_NON_POOLING: ${{ secrets.POSTGRES_URL_NON_POOLING }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DATABASE: ${{ secrets.POSTGRES_DATABASE }}
+          # 多行 KEY=VALUE。兼容仓库变量与仓库密钥。
+          VARS: ${{ vars.VARS || secrets.VARS }}
+        run: |
+          : > "$RUNNER_TEMP/vercel-env-keys.txt"
+
+          append_env() {
+            local key="$1"
+            local value="${!key-}"
+            if [ -z "$value" ]; then
+              return 0
+            fi
+            case "$key" in
+              [A-Za-z_][A-Za-z0-9_]*) ;;
+              *)
+                echo "跳过非法变量名: $key" >&2
+                return 0
+                ;;
+            esac
+            case "$key" in
+              VERCEL_*|GITHUB_*|PATH|HOME|NODE_ENV|CI)
+                echo "跳过保留变量名: $key" >&2
+                return 0
+                ;;
+            esac
+            {
+              printf '%s\n' "$key<<__VERCEL_ENV_${key}__"
+              printf '%s\n' "$value"
+              printf '%s\n' "__VERCEL_ENV_${key}__"
+            } >> "$GITHUB_ENV"
+            printf '%s\n' "$key" >> "$RUNNER_TEMP/vercel-env-keys.txt"
+          }
+
+          keys=(
+            NEXT_PUBLIC_STORAGE_TYPE NEXT_PUBLIC_SITE_NAME NEXT_PUBLIC_SEARCH_MAX_PAGE
+            NEXT_PUBLIC_DOUBAN_PROXY_TYPE NEXT_PUBLIC_DOUBAN_PROXY
+            NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE NEXT_PUBLIC_DOUBAN_IMAGE_PROXY
+            NEXT_PUBLIC_DISABLE_YELLOW_FILTER NEXT_PUBLIC_FLUID_SEARCH
+            NEXT_PUBLIC_PROXY_M3U8_TOKEN NEXT_PUBLIC_DANMAKU_CACHE_EXPIRE_MINUTES
+            NEXT_PUBLIC_VOICE_CHAT_STRATEGY NEXT_PUBLIC_ENABLE_OFFLINE_DOWNLOAD
+            NEXT_PUBLIC_ENABLE_SOURCE_SEARCH NEXT_PUBLIC_IMAGE_PROXY NEXT_PUBLIC_IMAGE_PROXY_PREFIX
+            NEXT_PUBLIC_STORAGE_PREFIX NEXT_PUBLIC_ENABLE_STREAM_PROXY NEXT_PUBLIC_STREAM_PROXY_URL
+            NEXT_PUBLIC_ENABLE_TURNSTILE NEXT_PUBLIC_TURNSTILE_SITE_KEY
+            NEXT_PUBLIC_THEME NEXT_PUBLIC_THEME_COLOR NEXT_PUBLIC_APP_URL NEXT_PUBLIC_BASE_PATH
+            USERNAME PASSWORD UPSTASH_URL UPSTASH_TOKEN TURSO_URL TURSO_TOKEN
+            TMDB_API_KEY TMDB_IMAGE_DOMAIN TMDB_PROXY TMDB_REVERSE_PROXY
+            DANMAKU_API_BASE DANMAKU_API_TOKEN ANNOUNCEMENT CRON_PASSWORD CRON_WAIT_FOR_COMPLETION
+            SITE_BASE REDIS_URL KVROCKS_URL INIT_CONFIG CONFIG_SUBSCRIPTION_URL ENABLE_REGISTER
+            ENABLE_TVBOX_SUBSCRIBE TVBOX_SUBSCRIBE_PATH TVBOX_SUBSCRIBE_TOKEN
+            WATCH_ROOM_ENABLED WATCH_ROOM_WS_URL WATCH_ROOM_SERVER_URL
+            WATCH_ROOM_EXTERNAL_SERVER_AUTH WATCH_ROOM_EXTERNAL_SERVER_URL WATCH_ROOM_SERVER_TYPE
+            WEBSOCKET_SECRET WEB_PUSH_EMAIL WEB_PUSH_PRIVATE_KEY WEB_PUSH_PUBLIC_KEY WEB_PUSH_BASEURL
+            TURNSTILE_SECRET_KEY
+            POSTGRES_URL POSTGRES_PRISMA_URL POSTGRES_URL_NON_POOLING
+            POSTGRES_USER POSTGRES_HOST POSTGRES_PASSWORD POSTGRES_DATABASE
+          )
+
+          for key in "${keys[@]}"; do
+            append_env "$key"
+          done
+
+          if [ -n "$VARS" ]; then
+            vars_file="$RUNNER_TEMP/vercel-custom-vars.txt"
+            umask 077
+            printf '%s\n' "$VARS" > "$vars_file"
+            while IFS= read -r line || [ -n "$line" ]; do
+              line="${line%$'\r'}"
+              line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              if [ -z "$line" ]; then continue; fi
+              case "$line" in \#*) continue ;; esac
+              case "$line" in
+                *=*) ;;
+                *) echo "跳过非法行（缺少 =）" >&2; continue ;;
+              esac
+              key="$(printf '%s' "${line%%=*}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              value="$(printf '%s' "${line#*=}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              value="${value%\"}"; value="${value#\"}"
+              case "$key" in
+                [A-Za-z_][A-Za-z0-9_]*) ;;
+                *) echo "跳过非法变量名: $key" >&2; continue ;;
+              esac
+              if [ -z "$value" ]; then
+                echo "跳过空值: $key" >&2
+                continue
+              fi
+              export "$key=$value"
+              append_env "$key"
+            done < "$vars_file"
+            rm -f "$vars_file"
+          fi
+
+          echo "NODE_ENV=production" >> "$GITHUB_ENV"
+
+      - name: Require Turso secrets
+        run: |
+          if [ -z "$TURSO_URL" ] || [ -z "$TURSO_TOKEN" ]; then
+            echo "TURSO_URL and TURSO_TOKEN secrets are required" >&2
+            exit 1
+          fi
+          if [ -n "$NEXT_PUBLIC_STORAGE_TYPE" ] && [ "$NEXT_PUBLIC_STORAGE_TYPE" != "turso" ]; then
+            echo "NEXT_PUBLIC_STORAGE_TYPE must be turso for this workflow (current: $NEXT_PUBLIC_STORAGE_TYPE)" >&2
+            exit 1
+          fi
+          if [ -z "$NEXT_PUBLIC_STORAGE_TYPE" ]; then
+            echo "NEXT_PUBLIC_STORAGE_TYPE is unset; using turso"
+            {
+              echo "NEXT_PUBLIC_STORAGE_TYPE<<__VERCEL_ENV_NEXT_PUBLIC_STORAGE_TYPE__"
+              echo "turso"
+              echo "__VERCEL_ENV_NEXT_PUBLIC_STORAGE_TYPE__"
+            } >> "$GITHUB_ENV"
+            printf '%s\n' "NEXT_PUBLIC_STORAGE_TYPE" >> "$RUNNER_TEMP/vercel-env-keys.txt"
+          fi
+
+      - name: Pull Vercel project settings
+        run: ./node_modules/.bin/vercel pull --yes --environment="$VERCEL_TARGET"
+
+      - name: Sync Vercel environment variables
+        if: ${{ inputs.sync_environment }}
+        run: |
+          # 值从 stdin 写入。不要用 --value：部分 CLI 版本会把 --value 存成空字符串。
+          # 非 NEXT_PUBLIC_ 使用 --sensitive。该类型 pull 不可读，构建值由后续 overlay 从 GitHub Secrets 写回。
+          sync_var() {
+            local key="$1"
+            local value="${!key-}"
+            if [ -z "$value" ]; then
+              return 0
+            fi
+            local tmp sensitive_flag=()
+            case "$key" in
+              NEXT_PUBLIC_*) ;;
+              *) sensitive_flag=(--sensitive) ;;
+            esac
+            umask 077
+            tmp=$(mktemp)
+            printf '%s' "$value" > "$tmp"
+            echo "Syncing $key"
+            if ! ./node_modules/.bin/vercel env add "$key" "$VERCEL_TARGET" --force --yes "${sensitive_flag[@]}" < "$tmp"; then
+              ./node_modules/.bin/vercel env rm "$key" "$VERCEL_TARGET" --yes || true
+              ./node_modules/.bin/vercel env add "$key" "$VERCEL_TARGET" --yes "${sensitive_flag[@]}" < "$tmp"
+            fi
+            rm -f "$tmp"
+          }
+
+          if [ ! -s "$RUNNER_TEMP/vercel-env-keys.txt" ]; then
+            echo "No non-empty GitHub environment variables to sync"
+            exit 0
+          fi
+
+          while IFS= read -r key; do
+            [ -z "$key" ] && continue
+            sync_var "$key"
+          done < "$RUNNER_TEMP/vercel-env-keys.txt"
+
+      - name: Overlay GitHub environment onto pulled env file
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const target = process.env.VERCEL_TARGET;
+          if (target !== 'production' && target !== 'preview') {
+            console.error(`Unsupported environment: ${target}`);
+            process.exit(1);
+          }
+
+          const envFile = path.join('.vercel', `.env.${target}.local`);
+          const keysFile = path.join(process.env.RUNNER_TEMP, 'vercel-env-keys.txt');
+          fs.mkdirSync('.vercel', { recursive: true });
+          let text = fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf8') : '';
+          if (text.length && !text.endsWith('\n')) text += '\n';
+
+          const keys = fs.existsSync(keysFile)
+            ? fs.readFileSync(keysFile, 'utf8').split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+            : [];
+
+          const serialize = (key, value) => {
+            const escaped = String(value)
+              .replace(/\\/g, '\\\\')
+              .replace(/\r/g, '\\r')
+              .replace(/\n/g, '\\n')
+              .replace(/"/g, '\\"');
+            return `${key}="${escaped}"`;
+          };
+
+          let applied = 0;
+          for (const key of [...new Set(keys)]) {
+            const value = process.env[key];
+            if (!value) continue;
+            const line = serialize(key, value);
+            const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const pattern = new RegExp('^' + escapedKey + '=.*$', 'm');
+            if (pattern.test(text)) {
+              text = text.replace(pattern, () => line);
+            } else {
+              text += line + '\n';
+            }
+            applied += 1;
+          }
+
+          fs.writeFileSync(envFile, text);
+          console.log(`Updated ${envFile} (${applied} GitHub values)`);
+          NODE
+
+      - name: Generate web manifest
+        run: pnpm gen:manifest
+
+      - name: Initialize Turso database
+        if: ${{ inputs.init_turso }}
+        run: pnpm init:turso
+
+      - name: Build for Vercel
+        run: |
+          args=(build)
+          if [ "$VERCEL_TARGET" = "production" ]; then
+            args+=(--prod)
+          fi
+          ./node_modules/.bin/vercel "${args[@]}"
+
+      - name: Deploy to Vercel
+        id: deploy
+        run: |
+          args=(deploy --prebuilt --archive=tgz --yes)
+          if [ "$VERCEL_TARGET" = "production" ]; then
+            args+=(--prod)
+          fi
+          ./node_modules/.bin/vercel "${args[@]}" > "$RUNNER_TEMP/vercel-deploy-url.txt"
+          deploy_url=$(grep -Eo 'https://[^[:space:]]+' "$RUNNER_TEMP/vercel-deploy-url.txt" | head -n 1)
+          if [ -z "$deploy_url" ]; then
+            echo "Vercel deploy did not return a URL" >&2
+            cat "$RUNNER_TEMP/vercel-deploy-url.txt" >&2
+            exit 1
+          fi
+          echo "deploy_url=$deploy_url" >> "$GITHUB_OUTPUT"
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "## Vercel deployment"
+            echo
+            echo "- Environment: ${VERCEL_TARGET}"
+            echo "- URL: ${{ steps.deploy.outputs.deploy_url }}"
+            echo "- Environment sync: ${{ inputs.sync_environment }}"
+          } >> "$GITHUB_STEP_SUMMARY"
