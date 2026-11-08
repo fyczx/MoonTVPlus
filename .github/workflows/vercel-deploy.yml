@@ -57,6 +57,7 @@ jobs:
 
       - name: Check Vercel credentials
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -77,9 +78,10 @@ jobs:
           const fs = require('fs');
 
           const token = String(process.env.VERCEL_TOKEN || '')
-            .trim()
+            .replace(/^\uFEFF/, '')
             .replace(/^Bearer\s+/i, '')
-            .replace(/^['"]|['"]$/g, '');
+            .replace(/^['"]|['"]$/g, '')
+            .replace(/\s+/g, '');
           const givenOrg = process.env.VERCEL_ORG_ID || '';
           const givenProject = process.env.VERCEL_PROJECT_ID || '';
           const repository = process.env.GITHUB_REPOSITORY || '';
@@ -148,8 +150,27 @@ jobs:
             return `${error.status || ''} ${error.path || ''} ${error.message || 'request failed'}${extra.length ? ` (${extra.join(' ')})` : ''}`.trim();
           }
 
-          async function getJson(url) {
-            return requestJson(url);
+          let discoveredSlug = '';
+          let discoveredTeamId = '';
+
+          async function getJson(url, attempt = 0) {
+            try {
+              return await requestJson(url);
+            } catch (error) {
+              if (error.status !== 403 || attempt > 0) throw error;
+              const detail = error.detail || {};
+              const scopeMatch = String(detail.message || '').match(/scope "([^"]+)"/);
+              const scope = detail.scope || (scopeMatch ? scopeMatch[1] : '');
+              const teamId = detail.teamId || '';
+              if (scope) discoveredSlug = scope;
+              if (teamId) discoveredTeamId = teamId;
+              if (!scope && !teamId) throw error;
+              const next = new URL(url);
+              if (scope && !next.searchParams.has('slug')) next.searchParams.set('slug', scope);
+              if (teamId && !next.searchParams.has('teamId')) next.searchParams.set('teamId', teamId);
+              if (next.toString() === url) throw error;
+              return getJson(next.toString(), attempt + 1);
+            }
           }
 
           function readProjects(data) {
@@ -164,6 +185,8 @@ jobs:
             for (let page = 0; page < 10; page += 1) {
               const params = new URLSearchParams({ limit: '100' });
               if (teamId) params.set('teamId', teamId);
+              else if (discoveredTeamId) params.set('teamId', discoveredTeamId);
+              if (!teamId && !discoveredTeamId && discoveredSlug) params.set('slug', discoveredSlug);
               if (until) params.set('until', until);
               const data = await getJson(`https://api.vercel.com/v10/projects?${params}`);
               const batch = readProjects(data);
