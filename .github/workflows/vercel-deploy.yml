@@ -36,8 +36,6 @@ jobs:
     name: Deploy to Vercel
     env:
       CI: true
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_TARGET: ${{ inputs.environment }}
 
@@ -58,6 +56,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Check Vercel credentials
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           case "$VERCEL_TARGET" in
             production|preview) ;;
@@ -66,11 +68,157 @@ jobs:
               exit 1
               ;;
           esac
-          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
-            echo "VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID are required" >&2
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "VERCEL_TOKEN secret is required" >&2
             exit 1
           fi
           ./node_modules/.bin/vercel --version
+          node <<'NODE'
+          const fs = require('fs');
+
+          const token = process.env.VERCEL_TOKEN;
+          const givenOrg = process.env.VERCEL_ORG_ID || '';
+          const givenProject = process.env.VERCEL_PROJECT_ID || '';
+          const repository = process.env.GITHUB_REPOSITORY || '';
+          const [owner, repo] = repository.split('/');
+
+          function publish(orgId, projectId, source) {
+            if (!/^[\w-]+$/.test(orgId) || !/^[\w-]+$/.test(projectId)) {
+              console.error('Resolved Vercel ids are not valid');
+              process.exit(1);
+            }
+            fs.appendFileSync(
+              process.env.GITHUB_ENV,
+              `VERCEL_ORG_ID=${orgId}\nVERCEL_PROJECT_ID=${projectId}\n`,
+            );
+            console.log(`Using Vercel project ${projectId} in ${orgId} (${source})`);
+          }
+
+          if ((givenOrg && !givenProject) || (!givenOrg && givenProject)) {
+            console.error('Set both VERCEL_ORG_ID and VERCEL_PROJECT_ID, or leave both unset.');
+            process.exit(1);
+          }
+          if (givenOrg && givenProject) {
+            publish(givenOrg, givenProject, 'secrets');
+            process.exit(0);
+          }
+          if (!owner || !repo) {
+            console.error('GITHUB_REPOSITORY is missing');
+            process.exit(1);
+          }
+
+          async function getJson(url) {
+            const response = await fetch(url, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            const text = await response.text();
+            let body = {};
+            try {
+              body = text ? JSON.parse(text) : {};
+            } catch {
+              body = {};
+            }
+            if (!response.ok) {
+              const error = new Error(body.error?.message || `Vercel API ${response.status}`);
+              error.status = response.status;
+              throw error;
+            }
+            return body;
+          }
+
+          async function listProjects(teamId) {
+            const projects = [];
+            let from = '';
+            for (let page = 0; page < 10; page += 1) {
+              const params = new URLSearchParams({ limit: '100' });
+              params.set('repoUrl', `https://github.com/${repository}`);
+              if (teamId) params.set('teamId', teamId);
+              if (from) params.set('from', from);
+              let data;
+              try {
+                data = await getJson(`https://api.vercel.com/v10/projects?${params}`);
+              } catch (error) {
+                if (error.status === 400) {
+                  params.delete('repoUrl');
+                  data = await getJson(`https://api.vercel.com/v10/projects?${params}`);
+                } else {
+                  throw error;
+                }
+              }
+              const batch = Array.isArray(data) ? data : data.projects || [];
+              projects.push(...batch);
+              const next = data.pagination?.next;
+              if (next === undefined || next === null || batch.length === 0) break;
+              from = String(next);
+            }
+            return projects;
+          }
+
+          function matches(project) {
+            const link = project.link;
+            return Boolean(link && link.type === 'github' && link.org === owner && link.repo === repo);
+          }
+
+          (async () => {
+            const scopes = [{ teamId: '', label: 'personal' }];
+            try {
+              const teams = await getJson('https://api.vercel.com/v2/teams');
+              for (const team of teams.teams || []) {
+                if (team.id) scopes.push({ teamId: team.id, label: team.slug || team.id });
+              }
+            } catch (error) {
+              if (error.status !== 403) throw error;
+            }
+
+            const found = [];
+            for (const scope of scopes) {
+              let projects = [];
+              try {
+                projects = await listProjects(scope.teamId);
+              } catch (error) {
+                if (error.status === 401) throw error;
+                if (error.status === 403 || error.status === 404) continue;
+                throw error;
+              }
+              for (const project of projects) {
+                if (!matches(project)) continue;
+                found.push({
+                  orgId: project.accountId || scope.teamId,
+                  projectId: project.id,
+                  name: project.name,
+                });
+              }
+            }
+
+            const unique = [];
+            const seen = new Set();
+            for (const item of found) {
+              const key = `${item.orgId}:${item.projectId}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              unique.push(item);
+            }
+
+            if (unique.length === 1) {
+              publish(unique[0].orgId, unique[0].projectId, `github:${repository}`);
+              return;
+            }
+            if (unique.length === 0) {
+              console.error(`No Vercel project is linked to ${repository}.`);
+              console.error('Connect this GitHub repository in the Vercel project, or set VERCEL_ORG_ID and VERCEL_PROJECT_ID.');
+              process.exit(1);
+            }
+            console.error(`Multiple Vercel projects are linked to ${repository}:`);
+            for (const item of unique) {
+              console.error(`- ${item.name} org=${item.orgId} project=${item.projectId}`);
+            }
+            console.error('Set VERCEL_ORG_ID and VERCEL_PROJECT_ID to choose one.');
+            process.exit(1);
+          })().catch((error) => {
+            console.error(error.message || error);
+            process.exit(1);
+          });
+          NODE
 
       - name: Export build environment variables
         env:
